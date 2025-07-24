@@ -1,0 +1,53 @@
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, unix_timestamp, expr, sequence, lit, explode, struct
+from pyspark.sql.types import TimestampType
+
+# Initialize Spark
+spark = SparkSession.builder.getOrCreate()
+
+# Read the input data
+df = spark.read.option("header", "true").csv("/path/to/your/input.csv", inferSchema=True)
+
+# Convert tagtimestamp to actual timestamp type and epoch seconds
+df = df.withColumn("tagtimestamp_ts", unix_timestamp("tagtimestamp", "MM/dd/yyyy HH:mm:ss:SSSSSS").cast("timestamp"))
+
+# Create lead column to get the next timestamp
+from pyspark.sql.window import Window
+from pyspark.sql.functions import lead
+
+w = Window.orderBy("tagtimestamp_ts")
+df = df.withColumn("next_timestamp", lead("tagtimestamp_ts").over(w))
+
+# Calculate time difference in seconds
+df = df.withColumn("time_diff", expr("int(unix_timestamp(next_timestamp) - unix_timestamp(tagtimestamp_ts))"))
+
+# Generate the sequence of timestamps only if time_diff > 1
+df = df.withColumn("ff_timestamp",
+    expr("""
+        CASE WHEN time_diff > 1 THEN
+            sequence(tagtimestamp_ts, next_timestamp - interval 1 second, interval 1 second)
+        ELSE
+            array(tagtimestamp_ts)
+        END
+    """)
+)
+
+# Explode the ff_timestamp array to create 1-sec rows
+df_filled = df.withColumn("ff_timestamp", explode("ff_timestamp"))
+
+# Drop unwanted future columns
+df_filled = df_filled.select(
+    "ff_timestamp",
+    "tagvalue",
+    "date_col",
+    "tagtype",
+    "start",
+    "end"
+)
+
+# Optional: sort by timestamp
+df_filled = df_filled.orderBy("ff_timestamp")
+
+# Save or display result
+df_filled.show(truncate=False)
+# df_filled.write.csv("/path/to/output.csv", header=True)
