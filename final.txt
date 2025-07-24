@@ -1,18 +1,18 @@
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, lit
+from pyspark.sql.functions import unix_timestamp, col
 from pyspark.sql.types import StructType, StructField, StringType, DoubleType, TimestampType
-import datetime
+from collections import defaultdict
+from datetime import timedelta
 
-# Initialize Spark
 spark = SparkSession.builder.getOrCreate()
 
-# Load the dataset
-df = spark.read.option("header", "true").csv("/path/to/your/input.csv", inferSchema=True)
+df = spark.read.option("header", "true").csv("/path/to/input.csv", inferSchema=True)
 
-# Convert tagtimestamp to TimestampType
-df = df.withColumn("tagtimestamp", col("tagtimestamp").cast(TimestampType()))
+df = df.withColumn(
+    "tagtimestamp",
+    unix_timestamp("tagtimestamp", "MM/dd/yyyy HH:mm:ss:SSS").cast(TimestampType())
+)
 
-# Fixed list of sensors
 expected_sensors = [
     "VDLM1VS1.XRMSvelocity", "VDLM1VS1.ZRMSvelocity", "VDLM1VS2.XRMSvelocity", "VDLM1VS2.ZRMSvelocity",
     "VDLM2VS1.XRMSvelocity", "VDLM2VS1.ZRMSvelocity", "VDLM2VS2.XRMSvelocity", "VDLM2VS2.ZRMSvelocity",
@@ -20,60 +20,51 @@ expected_sensors = [
     "OutputcurrentVFD2", "OutputcurrentIDC2", "BusvoltageIDC2", "TorqueFeedbackVFD2"
 ]
 
-# Collect data to driver (only works for moderate-sized datasets)
 data = df.orderBy("tagtimestamp").collect()
-
-# Dict to track last known value per sensor
 last_seen_values = {sensor: 0.0 for sensor in expected_sensors}
-
-# Final result list
 final_rows = []
-
-# Group data by timestamp
-from collections import defaultdict
 
 timestamp_map = defaultdict(list)
 for row in data:
     timestamp_map[row["tagtimestamp"]].append(row)
 
-# Process each timestamp
-for timestamp in sorted(timestamp_map.keys()):
-    rows = timestamp_map[timestamp]
-    present_sensors = set()
+sorted_timestamps = sorted(timestamp_map.keys())
 
-    # First, add the actual rows
-    for row in rows:
-        tagid = row["tagtype"]
+for i in range(len(sorted_timestamps) - 1):
+    ts_current = sorted_timestamps[i]
+    ts_next = sorted_timestamps[i + 1]
+    gap = int((ts_next - ts_current).total_seconds())
+
+    for row in timestamp_map[ts_current]:
+        tagid = row["tagid"]
         tagvalue = row["tagvalue"]
-        present_sensors.add(tagid)
-        last_seen_values[tagid] = tagvalue  # update last seen
-        final_rows.append((
-            timestamp, tagid, tagvalue, row["date_col"], row["start"], row["end"]
-        ))
+        last_seen_values[tagid] = tagvalue
+        final_rows.append((ts_current, ts_current, tagid, tagvalue, row["start"], row["end"]))
 
-    # Then, fill in missing sensors
-    missing = set(expected_sensors) - present_sensors
-    for sensor in missing:
-        final_rows.append((
-            timestamp, sensor, last_seen_values[sensor], None, None, None
-        ))
+    present = {r["tagid"] for r in timestamp_map[ts_current]}
+    missing_sensors = set(expected_sensors) - present
 
-# Define schema for new DataFrame
+    for sec in range(1, gap):
+        ff_time = ts_current + timedelta(seconds=sec)
+        for sensor in missing_sensors:
+            final_rows.append((ts_current, ff_time, sensor, last_seen_values[sensor], None, None))
+
+last_ts = sorted_timestamps[-1]
+for row in timestamp_map[last_ts]:
+    tagid = row["tagid"]
+    tagvalue = row["tagvalue"]
+    last_seen_values[tagid] = tagvalue
+    final_rows.append((last_ts, last_ts, tagid, tagvalue, row["start"], row["end"]))
+
 schema = StructType([
     StructField("tagtimestamp", TimestampType(), True),
-    StructField("tagtype", StringType(), True),
+    StructField("ff_tagtimestamp", TimestampType(), True),
+    StructField("tagid", StringType(), True),
     StructField("tagvalue", DoubleType(), True),
-    StructField("date_col", StringType(), True),
     StructField("start", DoubleType(), True),
     StructField("end", DoubleType(), True)
 ])
 
-# Create new DataFrame
 filled_df = spark.createDataFrame(final_rows, schema=schema)
-
-# Optional: sort by timestamp + tagtype
-filled_df = filled_df.orderBy("tagtimestamp", "tagtype")
-
-# Show or save result
+filled_df = filled_df.orderBy("ff_tagtimestamp", "tagid")
 filled_df.show(100, truncate=False)
-# filled_df.write.csv("/path/to/filled_output.csv", header=True)
