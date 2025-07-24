@@ -1,70 +1,52 @@
-from pyspark.sql import SparkSession
-from pyspark.sql.functions import unix_timestamp, col
-from pyspark.sql.types import StructType, StructField, StringType, DoubleType, TimestampType
-from collections import defaultdict
+from pyspark.sql.functions import col, to_timestamp, lit, explode, sequence, expr, struct
+from pyspark.sql import Window
 from datetime import timedelta
 
-spark = SparkSession.builder.getOrCreate()
-
-df = spark.read.option("header", "true").csv("/path/to/input.csv", inferSchema=True)
-
-df = df.withColumn(
-    "tagtimestamp",
-    unix_timestamp("tagtimestamp", "MM/dd/yyyy HH:mm:ss:SSS").cast(TimestampType())
-)
-
-expected_sensors = [
+sensor_list = [
     "VDLM1VS1.XRMSvelocity", "VDLM1VS1.ZRMSvelocity", "VDLM1VS2.XRMSvelocity", "VDLM1VS2.ZRMSvelocity",
     "VDLM2VS1.XRMSvelocity", "VDLM2VS1.ZRMSvelocity", "VDLM2VS2.XRMSvelocity", "VDLM2VS2.ZRMSvelocity",
     "OutputcurrentVFD1", "OutputcurrentIDC1", "BusvoltageIDC1", "TorqueFeedbackVFD1",
     "OutputcurrentVFD2", "OutputcurrentIDC2", "BusvoltageIDC2", "TorqueFeedbackVFD2"
 ]
 
-data = df.orderBy("tagtimestamp").collect()
-last_seen_values = {sensor: 0.0 for sensor in expected_sensors}
-final_rows = []
+raw_df = spark.read.option("header", "true").csv("/mnt/data/sensor_data.csv")
 
-timestamp_map = defaultdict(list)
-for row in data:
-    timestamp_map[row["tagtimestamp"]].append(row)
+df = raw_df.withColumn("tagvalue", col("tagvalue").cast("double")) \
+         .withColumn("start", col("start").cast("double")) \
+         .withColumn("end", col("end").cast("double")) \
+         .withColumn("tagtimestamp", to_timestamp(col("tagtimestamp"), "MM/dd/yyyy HH:mm:ss:SSS"))
 
-sorted_timestamps = sorted(timestamp_map.keys())
+w = Window.orderBy("tagtimestamp")
+df = df.withColumn("next_timestamp", expr("lead(tagtimestamp) over (order by tagtimestamp)"))
 
-for i in range(len(sorted_timestamps) - 1):
-    ts_current = sorted_timestamps[i]
-    ts_next = sorted_timestamps[i + 1]
-    gap = int((ts_next - ts_current).total_seconds())
+df = df.filter(col("next_timestamp").isNotNull())
 
-    for row in timestamp_map[ts_current]:
-        tagid = row["tagid"]
-        tagvalue = row["tagvalue"]
-        last_seen_values[tagid] = tagvalue
-        final_rows.append((ts_current, ts_current, tagid, tagvalue, row["start"], row["end"]))
+df_exploded = df.select(
+    col("tagtimestamp").alias("window_start"),
+    col("next_timestamp").alias("window_end"),
+    explode(sequence(expr("window_start + interval 1 seconds"), expr("window_end - interval 1 seconds"))).alias("ff_tagtimestamp")
+)
 
-    present = {r["tagid"] for r in timestamp_map[ts_current]}
-    missing_sensors = set(expected_sensors) - present
+df_exploded = df_exploded.crossJoin(
+    spark.createDataFrame([(s,) for s in sensor_list], ["tagid"])
+)
 
-    for sec in range(1, gap):
-        ff_time = ts_current + timedelta(seconds=sec)
-        for sensor in missing_sensors:
-            final_rows.append((ts_current, ff_time, sensor, last_seen_values[sensor], None, None))
+existing = df.select(col("tagtimestamp").alias("ff_tagtimestamp"), "tagid")
+df_exploded = df_exploded.join(existing, ["ff_tagtimestamp", "tagid"], "left_anti")
 
-last_ts = sorted_timestamps[-1]
-for row in timestamp_map[last_ts]:
-    tagid = row["tagid"]
-    tagvalue = row["tagvalue"]
-    last_seen_values[tagid] = tagvalue
-    final_rows.append((last_ts, last_ts, tagid, tagvalue, row["start"], row["end"]))
+last_value_window = Window.partitionBy("tagid").orderBy("tagtimestamp").rowsBetween(Window.unboundedPreceding, 0)
 
-schema = StructType([
-    StructField("tagtimestamp", TimestampType(), True),
-    StructField("ff_tagtimestamp", TimestampType(), True),
-    StructField("tagid", StringType(), True),
-    StructField("tagvalue", DoubleType(), True),
-    StructField("start", DoubleType(), True),
-    StructField("end", DoubleType(), True)
-])
+df_with_last = df.withColumn("last_tagvalue", expr("last(tagvalue, true) over (partition by tagid order by tagtimestamp rows between unbounded preceding and current row)"))
+latest_vals = df_with_last.groupBy("tagid").agg(expr("last(tagvalue, true)").alias("tagvalue"))
 
-filled_df = spark.createDataFrame(final_rows, schema=schema)
-filled_df = filled_df.orderBy("ff_tagtimestamp", "tagid")
-filled_df.show(100, truncate=False)
+fill_vals = df_exploded.join(latest_vals, ["tagid"], "left") \
+    .withColumn("tagvalue", col("tagvalue").cast("double")) \
+    .withColumn("tagtimestamp", col("window_start")) \
+    .withColumn("start", lit(None).cast("double")) \
+    .withColumn("end", lit(None).cast("double")) \
+    .select("tagtimestamp", "ff_tagtimestamp", "tagid", "tagvalue", "start", "end")
+
+existing_ff = df.withColumn("ff_tagtimestamp", col("tagtimestamp")) \
+               .select("tagtimestamp", "ff_tagtimestamp", "tagid", "tagvalue", "start", "end")
+
+final_df = existing_ff.unionByName(fill_vals).orderBy("ff_tagtimestamp", "tagid")
