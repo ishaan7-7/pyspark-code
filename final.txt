@@ -1,6 +1,7 @@
-from pyspark.sql.functions import col, to_timestamp, lit, explode, sequence, expr
+from pyspark.sql.functions import col, to_timestamp, lit, explode, expr, lead, collect_set, udf, array, struct
 from pyspark.sql import Window
-from datetime import timedelta
+from pyspark.sql.types import ArrayType, StructType, StructField, StringType, DoubleType, TimestampType
+from datetime import timedelta, datetime
 
 sensor_list = [
     "VDLM1VS1.XRMSvelocity", "VDLM1VS1.ZRMSvelocity", "VDLM1VS2.XRMSvelocity", "VDLM1VS2.ZRMSvelocity",
@@ -16,44 +17,58 @@ df = raw_df.withColumn("tagvalue", col("tagvalue").cast("double")) \
          .withColumn("end", col("end").cast("double")) \
          .withColumn("tagtimestamp", to_timestamp(col("tagtimestamp"), "MM/dd/yyyy HH:mm:ss:SSS"))
 
-df = df.orderBy("tagtimestamp")
+window = Window.orderBy("tagtimestamp")
+df = df.withColumn("next_tagtimestamp", lead("tagtimestamp").over(window))
 
-df_rdd = df.rdd.zipWithIndex().map(lambda x: (x[1], x[0]))
-df_dict = df_rdd.collectAsMap()
+sensor_last_value = {s: 0.0 for s in sensor_list}
 
-ff_rows = []
-sensor_last_value = {sensor: 0.0 for sensor in sensor_list}
+def generate_missing_rows(start_ts, end_ts, sensors_missing):
+    result = []
+    if start_ts is None or end_ts is None:
+        return result
+    step = timedelta(seconds=1)
+    current = start_ts + step
+    while current < end_ts:
+        for s in sensors_missing:
+            val = sensor_last_value.get(s, 0.0)
+            result.append((start_ts, current, s, val, None, None))
+        current += step
+    return result
 
-for i in range(len(df_dict) - 1):
-    row1 = df_dict[i]
-    row2 = df_dict[i + 1]
+generate_missing_rows_udf = udf(generate_missing_rows, ArrayType(StructType([
+    StructField("tagtimestamp", TimestampType()),
+    StructField("ff_tagtimestamp", TimestampType()),
+    StructField("tagid", StringType()),
+    StructField("tagvalue", DoubleType()),
+    StructField("start", DoubleType()),
+    StructField("end", DoubleType()),
+])))
 
-    t1 = row1["tagtimestamp"]
-    t2 = row2["tagtimestamp"]
+sensor_set_df = df.groupBy("tagtimestamp").agg(collect_set("tagid").alias("present_sensors"))
 
-    existing_sensors = set()
-    for j in range(i, i + 100):
-        if j >= len(df_dict):
-            break
-        r = df_dict[j]
-        if r["tagtimestamp"] > t2:
-            break
-        if t1 <= r["tagtimestamp"] <= t2:
-            existing_sensors.add(r["tagid"])
-            sensor_last_value[r["tagid"]] = r["tagvalue"]
+pair_df = df.select("tagtimestamp", "next_tagtimestamp").distinct().na.drop()
+pair_df = pair_df.join(sensor_set_df, on="tagtimestamp", how="left")
 
-    missing_sensors = set(sensor_list) - existing_sensors
+@udf(ArrayType(StringType()))
+def missing_sensors_udf(present):
+    if present is None:
+        return sensor_list
+    return list(set(sensor_list) - set(present))
 
-    seconds_gap = int((t2 - t1).total_seconds())
-    for sec in range(1, seconds_gap):
-        fill_time = t1 + timedelta(seconds=sec)
-        for sensor in missing_sensors:
-            ff_rows.append((t1, fill_time, sensor, sensor_last_value[sensor], None, None))
+pair_df = pair_df.withColumn("missing_sensors", missing_sensors_udf("present_sensors"))
+
+pair_df = pair_df.withColumn("filled_rows", generate_missing_rows_udf("tagtimestamp", "next_tagtimestamp", "missing_sensors"))
+
+filled_df = pair_df.selectExpr("explode(filled_rows) as row").select(
+    col("row.tagtimestamp"),
+    col("row.ff_tagtimestamp"),
+    col("row.tagid"),
+    col("row.tagvalue"),
+    col("row.start"),
+    col("row.end")
+)
 
 original_df = df.withColumn("ff_tagtimestamp", col("tagtimestamp")) \
                .select("tagtimestamp", "ff_tagtimestamp", "tagid", "tagvalue", "start", "end")
 
-schema = original_df.schema
-ff_df = spark.createDataFrame(ff_rows, schema)
-
-final_df = original_df.unionByName(ff_df).orderBy("ff_tagtimestamp", "tagid")
+final_df = original_df.unionByName(filled_df).orderBy("ff_tagtimestamp", "tagid")
