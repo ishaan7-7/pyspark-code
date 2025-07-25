@@ -1,4 +1,4 @@
-from pyspark.sql.functions import col, to_timestamp, lit, explode, expr, sequence, last
+from pyspark.sql.functions import col, to_timestamp, lit, explode, sequence, last
 from pyspark.sql import Window
 from pyspark.sql.types import TimestampType
 from pyspark.sql import Row
@@ -18,10 +18,13 @@ df = raw_df.withColumn("tagvalue", col("tagvalue").cast("double")) \
          .withColumn("end", col("end").cast("double")) \
          .withColumn("tagtimestamp", to_timestamp(col("tagtimestamp"), "MM/dd/yyyy HH:mm:ss:SSS"))
 
-min_ts = df.selectExpr("min(tagtimestamp) as min_ts").first()["min_ts"]
-max_ts = df.selectExpr("max(tagtimestamp) as max_ts").first()["max_ts"]
+min_ts = df.agg({"tagtimestamp": "min"}).first()[0]
+max_ts = df.agg({"tagtimestamp": "max"}).first()[0]
 
-sec_range_df = spark.range(0, int((max_ts - min_ts).total_seconds()) + 1).withColumn("ff_tagtimestamp", expr(f"timestamp'{min_ts}' + interval cast(id as int) seconds"))
+time_diff_sec = int((max_ts.timestamp() - min_ts.timestamp())) + 1
+
+sec_range = [Row(ff_tagtimestamp=min_ts + timedelta(seconds=i)) for i in range(time_diff_sec)]
+sec_range_df = spark.createDataFrame(sec_range)
 
 sensor_df = spark.createDataFrame([(s,) for s in sensor_list], ["tagid"])
 
@@ -42,6 +45,8 @@ window = Window.partitionBy("tagid").orderBy("ff_tagtimestamp").rowsBetween(Wind
 filled_df = merged_df.withColumn("tagvalue", last("tagvalue", ignorenulls=True).over(window)) \
                      .withColumn("start", last("start", ignorenulls=True).over(window)) \
                      .withColumn("end", last("end", ignorenulls=True).over(window)) \
-                     .withColumn("tagtimestamp", expr("first(ff_tagtimestamp) over (partition by tagid order by ff_tagtimestamp rows between current row and current row)"))
+                     .withColumn("tagtimestamp", last("ff_tagtimestamp", ignorenulls=True).over(window))
 
 final_df = filled_df.select("tagtimestamp", "ff_tagtimestamp", "tagid", "tagvalue", "start", "end").orderBy("ff_tagtimestamp", "tagid")
+
+display(final_df)
