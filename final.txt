@@ -1,7 +1,7 @@
-from pyspark.sql.functions import col, to_timestamp, lit, explode, expr, lead, collect_set, udf, array, struct
+from pyspark.sql.functions import col, to_timestamp, lit, explode, expr, sequence, last
 from pyspark.sql import Window
-from pyspark.sql.types import ArrayType, StructType, StructField, StringType, DoubleType, TimestampType
-from datetime import timedelta, datetime
+from pyspark.sql.types import TimestampType
+from datetime import timedelta
 
 sensor_list = [
     "VDLM1VS1.XRMSvelocity", "VDLM1VS1.ZRMSvelocity", "VDLM1VS2.XRMSvelocity", "VDLM1VS2.ZRMSvelocity",
@@ -17,58 +17,25 @@ df = raw_df.withColumn("tagvalue", col("tagvalue").cast("double")) \
          .withColumn("end", col("end").cast("double")) \
          .withColumn("tagtimestamp", to_timestamp(col("tagtimestamp"), "MM/dd/yyyy HH:mm:ss:SSS"))
 
-window = Window.orderBy("tagtimestamp")
-df = df.withColumn("next_tagtimestamp", lead("tagtimestamp").over(window))
+min_ts = df.selectExpr("min(tagtimestamp) as min_ts").first()["min_ts"]
+max_ts = df.selectExpr("max(tagtimestamp) as max_ts").first()["max_ts"]
 
-sensor_last_value = {s: 0.0 for s in sensor_list}
+sec_range_df = spark.range(0, int((max_ts - min_ts).total_seconds()) + 1).withColumn("ff_tagtimestamp", expr(f"timestamp'{min_ts}' + interval cast(id as int) seconds"))
 
-def generate_missing_rows(start_ts, end_ts, sensors_missing):
-    result = []
-    if start_ts is None or end_ts is None:
-        return result
-    step = timedelta(seconds=1)
-    current = start_ts + step
-    while current < end_ts:
-        for s in sensors_missing:
-            val = sensor_last_value.get(s, 0.0)
-            result.append((start_ts, current, s, val, None, None))
-        current += step
-    return result
+sensor_df = spark.createDataFrame([(s,) for s in sensor_list], ["tagid"])
 
-generate_missing_rows_udf = udf(generate_missing_rows, ArrayType(StructType([
-    StructField("tagtimestamp", TimestampType()),
-    StructField("ff_tagtimestamp", TimestampType()),
-    StructField("tagid", StringType()),
-    StructField("tagvalue", DoubleType()),
-    StructField("start", DoubleType()),
-    StructField("end", DoubleType()),
-])))
+full_timeline_df = sec_range_df.crossJoin(sensor_df)
 
-sensor_set_df = df.groupBy("tagtimestamp").agg(collect_set("tagid").alias("present_sensors"))
+df_prepared = df.withColumn("ff_tagtimestamp", col("tagtimestamp")) \
+               .select("ff_tagtimestamp", "tagid", "tagvalue", "start", "end")
 
-pair_df = df.select("tagtimestamp", "next_tagtimestamp").distinct().na.drop()
-pair_df = pair_df.join(sensor_set_df, on="tagtimestamp", how="left")
+merged_df = full_timeline_df.join(df_prepared, on=["ff_tagtimestamp", "tagid"], how="left")
 
-@udf(ArrayType(StringType()))
-def missing_sensors_udf(present):
-    if present is None:
-        return sensor_list
-    return list(set(sensor_list) - set(present))
+window = Window.partitionBy("tagid").orderBy("ff_tagtimestamp").rowsBetween(Window.unboundedPreceding, 0)
 
-pair_df = pair_df.withColumn("missing_sensors", missing_sensors_udf("present_sensors"))
+filled_df = merged_df.withColumn("tagvalue", last("tagvalue", ignorenulls=True).over(window)) \
+                     .withColumn("start", last("start", ignorenulls=True).over(window)) \
+                     .withColumn("end", last("end", ignorenulls=True).over(window)) \
+                     .withColumn("tagtimestamp", expr("first(ff_tagtimestamp) over (partition by tagid order by ff_tagtimestamp rows between current row and current row)"))
 
-pair_df = pair_df.withColumn("filled_rows", generate_missing_rows_udf("tagtimestamp", "next_tagtimestamp", "missing_sensors"))
-
-filled_df = pair_df.selectExpr("explode(filled_rows) as row").select(
-    col("row.tagtimestamp"),
-    col("row.ff_tagtimestamp"),
-    col("row.tagid"),
-    col("row.tagvalue"),
-    col("row.start"),
-    col("row.end")
-)
-
-original_df = df.withColumn("ff_tagtimestamp", col("tagtimestamp")) \
-               .select("tagtimestamp", "ff_tagtimestamp", "tagid", "tagvalue", "start", "end")
-
-final_df = original_df.unionByName(filled_df).orderBy("ff_tagtimestamp", "tagid")
+final_df = filled_df.select("tagtimestamp", "ff_tagtimestamp", "tagid", "tagvalue", "start", "end").orderBy("ff_tagtimestamp", "tagid")
