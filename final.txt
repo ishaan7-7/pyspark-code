@@ -1,59 +1,37 @@
-from pyspark.sql.functions import col, to_timestamp, lit, last, from_unixtime
-from pyspark.sql import Window
-from datetime import datetime
-import time
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, lit, explode, array, struct, last, asc
+from pyspark.sql.window import Window
 
-# 1. Read and parse
-raw_df = spark.read.option("header", "true").csv("/mnt/data/sensor_data.csv")
-df = (raw_df
-      .withColumn("tagtimestamp", to_timestamp(col("tagtimestamp"), "MM/dd/yyyy HH:mm:ss:SSS"))
-      .withColumn("tagvalue", col("tagvalue").cast("double"))
-      .withColumn("start", col("start").cast("double"))
-      .withColumn("end", col("end").cast("double")))
+spark = SparkSession.builder.appName("Sensor Forward Fill").getOrCreate()
 
-# 2. Find min/max as Python datetimes
-min_ts = df.agg({"tagtimestamp":"min"}).first()[0]
-max_ts = df.agg({"tagtimestamp":"max"}).first()[0]
+df = spark.read.option("header", True).option("inferSchema", True).csv("/path/to/your/data.csv")
 
-# 3. Compute base epoch and span
-base_epoch = int(time.mktime(min_ts.timetuple()))
-span_secs = int((max_ts - min_ts).total_seconds())
+unique_times_df = df.select("tagtime").distinct()
 
-# 4. Build a DataFrame with one row per second
-sec_df = (spark.range(0, span_secs+1)
-          .withColumn("ff_tagtimestamp",
-                      from_unixtime(lit(base_epoch) + col("id")).cast("timestamp"))
-          .select("ff_tagtimestamp"))
-
-# 5. Cross‑join with sensors
 sensor_list = [
-    "VDLM1VS1.XRMSvelocity","VDLM1VS1.ZRMSvelocity","VDLM1VS2.XRMSvelocity","VDLM1VS2.ZRMSvelocity",
-    "VDLM2VS1.XRMSvelocity","VDLM2VS1.ZRMSvelocity","VDLM2VS2.XRMSvelocity","VDLM2VS2.ZRMSvelocity",
-    "OutputcurrentVFD1","OutputcurrentIDC1","BusvoltageIDC1","TorqueFeedbackVFD1",
-    "OutputcurrentVFD2","OutputcurrentIDC2","BusvoltageIDC2","TorqueFeedbackVFD2"
+    "VDLM1VS1.XRMSvelocity", "VDLM1VS1.ZRMSvelocity", "VDLM1VS2.XRMSvelocity", "VDLM1VS2.ZRMSvelocity",
+    "VDLM2VS1.XRMSvelocity", "VDLM2VS1.ZRMSvelocity", "VDLM2VS2.XRMSvelocity", "VDLM2VS2.ZRMSvelocity",
+    "OutputcurrentVFD1", "OutputcurrentIDC1", "BusvoltageIDC1", "TorqueFeedbackVFD1",
+    "OutputcurrentVFD2", "OutputcurrentIDC2", "BusvoltageIDC2", "TorqueFeedbackVFD2"
 ]
-sensor_df = spark.createDataFrame([(s,) for s in sensor_list], ["tagid"])
-full_grid = sec_df.crossJoin(sensor_df)
 
-# 6. Align original data to the grid
-orig = (df
-        .withColumnRenamed("tagtimestamp", "orig_timestamp")
-        .withColumn("ff_tagtimestamp", col("orig_timestamp"))
-        .select("ff_tagtimestamp","tagid","tagvalue","start","end","orig_timestamp"))
+sensors_df = spark.createDataFrame([(s,) for s in sensor_list], ["tagid"])
 
-joined = full_grid.join(orig, on=["ff_tagtimestamp","tagid"], how="left")
+grid_df = unique_times_df.crossJoin(sensors_df)
 
-# 7. Forward‑fill per sensor
-w = Window.partitionBy("tagid").orderBy("ff_tagtimestamp").rowsBetween(Window.unboundedPreceding, 0)
-filled = (joined
-          .withColumn("tagvalue", last("tagvalue", ignorenulls=True).over(w))
-          .withColumn("start",     last("start",     ignorenulls=True).over(w))
-          .withColumn("end",       last("end",       ignorenulls=True).over(w))
-          .withColumn("tagtimestamp", last("orig_timestamp", ignorenulls=True).over(w)))
+enriched_df = grid_df.join(df.select("tagtime", "tagid", "tagvalue", "start", "end"), 
+                           on=["tagtime", "tagid"], how="left")
 
-# 8. Final select & display
-final_df = (filled
-            .select("tagtimestamp","ff_tagtimestamp","tagid","tagvalue","start","end")
-            .orderBy("ff_tagtimestamp","tagid"))
+window_spec = Window.partitionBy("tagid").orderBy(asc("tagtime")).rowsBetween(Window.unboundedPreceding, 0)
 
-display(final_df)
+filled_df = enriched_df.withColumn("tagvalue_filled", last("tagvalue", ignorenulls=True).over(window_spec))
+
+filled_df = filled_df.withColumn("tagvalue_final", col("tagvalue_filled").cast("double")).fillna({"tagvalue_final": 0.0})
+
+pivot_df = filled_df.select("tagtime", "tagid", "tagvalue_final") \
+                    .groupBy("tagtime") \
+                    .pivot("tagid") \
+                    .agg({"tagvalue_final": "first"}) \
+                    .orderBy("tagtime")
+
+pivot_df.show(truncate=False)
