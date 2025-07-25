@@ -35,3 +35,25 @@ pivot_df = filled_df.select("tagtime", "tagid", "tagvalue_final") \
                     .orderBy("tagtime")
 
 pivot_df.show(truncate=False)
+
+from pyspark.sql.functions import col, last, first
+from pyspark.sql.window import Window
+
+# 1. Pivot the wide table from filled_df
+pivot_df = filled_df.groupBy("tagtime") \
+                    .pivot("tagid") \
+                    .agg(first("tagvalue_final")) \
+                    .orderBy("tagtime")
+
+# 2. Define a global time-ordered window (no partition)
+window_spec = Window.orderBy("tagtime").rowsBetween(Window.unboundedPreceding, 0)
+
+# 3. Get all sensor columns (exclude tagtime)
+sensor_cols = [col_name for col_name in pivot_df.columns if col_name != "tagtime"]
+
+# 4. Forward-fill each sensor column across time
+for col_name in sensor_cols:
+    pivot_df = pivot_df.withColumn(col_name, last(col(col_name), ignoreNulls=True).over(window_spec))
+
+# 5. Show or save final result
+pivot_df.show(truncate=False)
