@@ -1,6 +1,7 @@
 from pyspark.sql.functions import col, to_timestamp, lit, explode, expr, sequence, last
 from pyspark.sql import Window
 from pyspark.sql.types import TimestampType
+from pyspark.sql import Row
 from datetime import timedelta
 
 sensor_list = [
@@ -26,8 +27,13 @@ sensor_df = spark.createDataFrame([(s,) for s in sensor_list], ["tagid"])
 
 full_timeline_df = sec_range_df.crossJoin(sensor_df)
 
+seed_rows = [Row(ff_tagtimestamp=min_ts, tagid=s, tagvalue=0.0, start=0.0, end=0.0) for s in sensor_list]
+seed_df = spark.createDataFrame(seed_rows)
+
 df_prepared = df.withColumn("ff_tagtimestamp", col("tagtimestamp")) \
-               .select("ff_tagtimestamp", "tagid", "tagvalue", "start", "end")
+                .select("ff_tagtimestamp", "tagid", "tagvalue", "start", "end")
+
+df_prepared = df_prepared.unionByName(seed_df)
 
 merged_df = full_timeline_df.join(df_prepared, on=["ff_tagtimestamp", "tagid"], how="left")
 
