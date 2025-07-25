@@ -57,3 +57,16 @@ for col_name in sensor_cols:
 
 # 5. Show or save final result
 pivot_df.show(truncate=False)
+
+
+
+for col_name in sensor_cols:
+    pivot_df = pivot_df.withColumn(
+        col_name,
+        when(
+            last(col(col_name), ignorenulls=True).over(window_spec).isNull(), 
+            lit(0)
+        ).otherwise(
+            last(col(col_name), ignorenulls=True).over(window_spec)
+        )
+    )
