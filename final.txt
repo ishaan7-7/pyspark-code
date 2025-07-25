@@ -1,9 +1,9 @@
-from pyspark.sql.functions import col, to_timestamp, lit, explode, sequence, last
+from pyspark.sql.functions import col, to_timestamp, lit, last, explode, sequence
 from pyspark.sql import Window
 from pyspark.sql.types import TimestampType
-from pyspark.sql import Row
 from datetime import timedelta
 
+# Define all required sensors
 sensor_list = [
     "VDLM1VS1.XRMSvelocity", "VDLM1VS1.ZRMSvelocity", "VDLM1VS2.XRMSvelocity", "VDLM1VS2.ZRMSvelocity",
     "VDLM2VS1.XRMSvelocity", "VDLM2VS1.ZRMSvelocity", "VDLM2VS2.XRMSvelocity", "VDLM2VS2.ZRMSvelocity",
@@ -11,42 +11,50 @@ sensor_list = [
     "OutputcurrentVFD2", "OutputcurrentIDC2", "BusvoltageIDC2", "TorqueFeedbackVFD2"
 ]
 
+# Load raw data
 raw_df = spark.read.option("header", "true").csv("/mnt/data/sensor_data.csv")
 
-df = raw_df.withColumn("tagvalue", col("tagvalue").cast("double")) \
-         .withColumn("start", col("start").cast("double")) \
-         .withColumn("end", col("end").cast("double")) \
-         .withColumn("tagtimestamp", to_timestamp(col("tagtimestamp"), "MM/dd/yyyy HH:mm:ss:SSS"))
+# Parse timestamp and cast necessary columns
+df = raw_df.withColumn("tagtimestamp", to_timestamp(col("tagtimestamp"), "MM/dd/yyyy HH:mm:ss:SSS")) \
+           .withColumn("tagvalue", col("tagvalue").cast("double")) \
+           .withColumn("start", col("start").cast("double")) \
+           .withColumn("end", col("end").cast("double")) \
+           .withColumn("tagid", col("tagid"))
 
+# Determine min and max timestamp
 min_ts = df.agg({"tagtimestamp": "min"}).first()[0]
 max_ts = df.agg({"tagtimestamp": "max"}).first()[0]
 
-time_diff_sec = int((max_ts.timestamp() - min_ts.timestamp())) + 1
+# Generate full range of 1-second timestamps
+timestamp_df = spark.createDataFrame([(min_ts, max_ts)], ["start", "end"]) \
+    .withColumn("ff_tagtimestamp", explode(sequence(col("start"), col("end"), expr("INTERVAL 1 SECOND")))) \
+    .select("ff_tagtimestamp")
 
-sec_range = [Row(ff_tagtimestamp=min_ts + timedelta(seconds=i)) for i in range(time_diff_sec)]
-sec_range_df = spark.createDataFrame(sec_range)
-
+# Create sensor DataFrame
 sensor_df = spark.createDataFrame([(s,) for s in sensor_list], ["tagid"])
 
-full_timeline_df = sec_range_df.crossJoin(sensor_df)
+# Cross join to get full grid: every sensor at every second
+full_grid_df = timestamp_df.crossJoin(sensor_df)
 
-seed_rows = [Row(ff_tagtimestamp=min_ts, tagid=s, tagvalue=0.0, start=0.0, end=0.0) for s in sensor_list]
-seed_df = spark.createDataFrame(seed_rows)
-
+# Prepare actual data with ff_tagtimestamp = tagtimestamp
 df_prepared = df.withColumn("ff_tagtimestamp", col("tagtimestamp")) \
-                .select("ff_tagtimestamp", "tagid", "tagvalue", "start", "end")
+                .select("ff_tagtimestamp", "tagid", "tagvalue", "start", "end", "tagtimestamp")
 
-df_prepared = df_prepared.unionByName(seed_df)
+# Join actual data onto full grid
+joined_df = full_grid_df.join(df_prepared, on=["ff_tagtimestamp", "tagid"], how="left")
 
-merged_df = full_timeline_df.join(df_prepared, on=["ff_tagtimestamp", "tagid"], how="left")
+# Window for forward filling per sensor
+fill_window = Window.partitionBy("tagid").orderBy("ff_tagtimestamp").rowsBetween(Window.unboundedPreceding, 0)
 
-window = Window.partitionBy("tagid").orderBy("ff_tagtimestamp").rowsBetween(Window.unboundedPreceding, 0)
+# Forward-fill missing values per sensor
+filled_df = joined_df.withColumn("tagvalue", last("tagvalue", ignorenulls=True).over(fill_window)) \
+                     .withColumn("start", last("start", ignorenulls=True).over(fill_window)) \
+                     .withColumn("end", last("end", ignorenulls=True).over(fill_window)) \
+                     .withColumn("tagtimestamp", last("tagtimestamp", ignorenulls=True).over(fill_window))
 
-filled_df = merged_df.withColumn("tagvalue", last("tagvalue", ignorenulls=True).over(window)) \
-                     .withColumn("start", last("start", ignorenulls=True).over(window)) \
-                     .withColumn("end", last("end", ignorenulls=True).over(window)) \
-                     .withColumn("tagtimestamp", last("ff_tagtimestamp", ignorenulls=True).over(window))
+# Final sorted DataFrame
+final_df = filled_df.select("tagtimestamp", "ff_tagtimestamp", "tagid", "tagvalue", "start", "end") \
+                    .orderBy("ff_tagtimestamp", "tagid")
 
-final_df = filled_df.select("tagtimestamp", "ff_tagtimestamp", "tagid", "tagvalue", "start", "end").orderBy("ff_tagtimestamp", "tagid")
-
+# Show or display as needed in Databricks
 display(final_df)
