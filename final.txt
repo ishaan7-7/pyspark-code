@@ -505,3 +505,36 @@ for signal in signal_cols:
     plt.tight_layout()
     plt.show()
 
+
+
+import pandas as pd
+import numpy as np
+from pyspark.sql import functions as F
+import matplotlib.pyplot as plt
+
+signal_cols = [col for col in df.columns if col.startswith("signal_")]
+
+pdf = df.select(["timestamp"] + signal_cols).toPandas()
+pdf["timestamp"] = pd.to_datetime(pdf["timestamp"], format="%m/%d/%Y %H:%M:%S:%f")
+pdf = pdf.sort_values("timestamp").reset_index(drop=True)
+pdf.set_index("timestamp", inplace=True)
+
+zscore_threshold = 3
+rolling_window = "100min"
+
+for signal in signal_cols:
+    series = pdf[signal]
+    roll_mean = series.rolling(rolling_window).mean()
+    roll_std = series.rolling(rolling_window).std()
+    zscore = (series - roll_mean) / roll_std
+    anomalies = zscore.abs() > zscore_threshold
+
+    plt.figure(figsize=(12, 4))
+    plt.plot(series.index, series, label="Raw", color="lightgray")
+    plt.plot(roll_mean.index, roll_mean, label="Rolling Mean", color="blue")
+    plt.scatter(series.index[anomalies], series[anomalies], color="red", label="Anomaly", s=10)
+    plt.title(f"Rolling Anomaly Detection (100min) - {signal}")
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
