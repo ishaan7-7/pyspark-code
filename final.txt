@@ -538,3 +538,67 @@ for signal in signal_cols:
     plt.tight_layout()
     plt.show()
 
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+
+sampling_interval = "1min"
+rolling_window = "100min"
+zscore_threshold = 3
+
+time_unit_map = {
+    "s": 1,
+    "sec": 1,
+    "second": 1,
+    "min": 60,
+    "minute": 60,
+    "h": 3600,
+    "hr": 3600,
+    "hour": 3600
+}
+
+def parse_interval(interval_str):
+    num = ''.join([c for c in interval_str if c.isdigit()])
+    unit = ''.join([c for c in interval_str if not c.isdigit()]).strip().lower()
+    return float(num) * time_unit_map[unit]
+
+d_seconds = parse_interval(sampling_interval)
+
+signal_cols = [col for col in df.columns if col.startswith("signal_")]
+
+pdf = df.select(["timestamp"] + signal_cols).toPandas()
+pdf["timestamp"] = pd.to_datetime(pdf["timestamp"], format="%m/%d/%Y %H:%M:%S:%f")
+pdf = pdf.sort_values("timestamp").reset_index(drop=True)
+pdf.set_index("timestamp", inplace=True)
+
+for signal in signal_cols:
+    series = pdf[signal]
+    roll_mean = series.rolling(rolling_window).mean()
+    roll_std = series.rolling(rolling_window).std()
+    zscore = (series - roll_mean) / roll_std
+    anomalies = zscore.abs() > zscore_threshold
+
+    plt.figure(figsize=(12, 4))
+    plt.plot(series.index, series, label="Raw", color="gray", linewidth=1)
+    plt.plot(roll_mean.index, roll_mean, label="Rolling Mean", color="blue", linewidth=1)
+    plt.scatter(series.index[anomalies], series[anomalies], color="red", label="Anomaly", s=10)
+    plt.title(f"Rolling Anomaly Detection - {signal}")
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+    values = series.fillna(0).values
+    fft_vals = np.fft.fft(values)
+    fft_freqs = np.fft.fftfreq(len(values), d=d_seconds)
+    pos_mask = fft_freqs > 0
+    freqs = fft_freqs[pos_mask]
+    amplitudes = np.abs(fft_vals[pos_mask])
+
+    plt.figure(figsize=(10, 4))
+    plt.plot(freqs, amplitudes, color='purple')
+    plt.title(f"FFT Spectrum - {signal} ({sampling_interval})")
+    plt.xlabel("Frequency (Hz)")
+    plt.ylabel("Amplitude")
+    plt.tight_layout()
+    plt.show()
