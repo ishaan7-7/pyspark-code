@@ -453,3 +453,55 @@ for signal in signal_cols:
     plt.ylabel("Amplitude")
     plt.tight_layout()
     plt.show()
+
+
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+
+sampling_interval = "1min"
+
+time_unit_map = {
+    "s": 1,
+    "sec": 1,
+    "second": 1,
+    "min": 60,
+    "minute": 60,
+    "h": 3600,
+    "hr": 3600,
+    "hour": 3600
+}
+
+def parse_interval(interval_str):
+    if interval_str.isdigit():
+        return float(interval_str)
+    num = ''.join([c for c in interval_str if c.isdigit()])
+    unit = ''.join([c for c in interval_str if not c.isdigit()]).strip().lower()
+    return float(num) * time_unit_map[unit]
+
+d_seconds = parse_interval(sampling_interval)
+
+signal_cols = [col for col in df.columns if col.startswith("signal_")]
+
+for signal in signal_cols:
+    small_df = df.select("timestamp", signal).toPandas()
+    small_df["timestamp"] = pd.to_datetime(small_df["timestamp"], format="%m/%d/%Y %H:%M:%S:%f")
+    small_df = small_df.sort_values("timestamp").reset_index(drop=True)
+
+    values = small_df[signal].values
+    fft_vals = np.fft.fft(values)
+    fft_freqs = np.fft.fftfreq(len(values), d=d_seconds)
+
+    pos_mask = fft_freqs > 0
+    freqs = fft_freqs[pos_mask]
+    amplitudes = np.abs(fft_vals[pos_mask])
+
+    plt.figure(figsize=(10, 4))
+    plt.plot(freqs, amplitudes, color='purple')
+    plt.title(f"FFT Spectrum of {signal} ({sampling_interval} sampling)")
+    plt.xlabel("Frequency (Hz)")
+    plt.ylabel("Amplitude")
+    plt.tight_layout()
+    plt.show()
+
