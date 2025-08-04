@@ -187,3 +187,76 @@ for signal in signals:
     plt.tight_layout()
     plt.show()
 
+
+
+import pandas as pd
+import matplotlib.pyplot as plt
+
+# Convert Spark DF to Pandas if not already done
+df = df.toPandas()
+
+# Load anomaly windows
+anomalydf = pd.read_csv("/dbfs/mnt/data/anomaly_windows_complex.csv")
+
+# Convert timestamps
+df["timestamp"] = pd.to_datetime(df["timestamp"], format="%m/%d/%Y %H:%M:%S:%f")
+anomalydf["start_timestamp"] = pd.to_datetime(anomalydf["start_timestamp"], format="%m/%d/%Y %H:%M:%S:%f")
+anomalydf["end_timestamp"] = pd.to_datetime(anomalydf["end_timestamp"], format="%m/%d/%Y %H:%M:%S:%f")
+
+# Extract signal columns dynamically
+signals = [col for col in df.columns if col.startswith("signal_")]
+
+# Sort main df
+df = df.sort_values("timestamp").reset_index(drop=True)
+
+# Plot for each signal
+for signal in signals:
+    plt.figure(figsize=(10, 5))
+
+    # Get time and values
+    timestamps = df["timestamp"].values
+    values = df[signal].values
+
+    # Filter anomaly windows for this signal
+    windows = anomalydf[anomalydf["signal"] == signal].sort_values("start_timestamp")
+
+    # Initialize pointer for where last segment ended
+    last_idx = 0
+
+    for _, row in windows.iterrows():
+        start_ts = row["start_timestamp"]
+        end_ts = row["end_timestamp"]
+
+        # Get integer index positions
+        start_mask = df["timestamp"] >= start_ts
+        end_mask = df["timestamp"] <= end_ts
+
+        if start_mask.any() and end_mask.any():
+            start_idx = start_mask.idxmax()
+            end_idx = end_mask[::-1].idxmax()  # reverse mask to find last True
+
+            # Plot normal segment before anomaly
+            if start_idx > last_idx:
+                plt.plot(timestamps[last_idx:start_idx+1], values[last_idx:start_idx+1], color="blue", linewidth=1.2)
+
+            # Plot anomaly segment
+            plt.plot(timestamps[start_idx:end_idx+1], values[start_idx:end_idx+1], color="yellow", linewidth=2)
+
+            # Red vertical lines
+            plt.axvline(x=start_ts, color="red", linestyle="--", linewidth=1)
+            plt.axvline(x=end_ts, color="red", linestyle="--", linewidth=1)
+
+            last_idx = end_idx + 1
+
+    # Plot remaining normal data after last anomaly
+    if last_idx < len(timestamps):
+        plt.plot(timestamps[last_idx:], values[last_idx:], color="blue", linewidth=1.2)
+
+    # Final decorations
+    plt.title(f"Signal: {signal}")
+    plt.xlabel("Timestamp")
+    plt.ylabel("Value")
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    plt.show()
+
