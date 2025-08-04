@@ -60,3 +60,61 @@ for signal in signal_cols:
     plt.xticks(rotation=45)
     plt.tight_layout()
     plt.show()
+
+
+
+import matplotlib.pyplot as plt
+import pandas as pd
+from pyspark.sql import functions as F
+
+# Step 1: Keep only 10 signals and timestamp
+selected_signals = ["timestamp"] + [f"signal_{i}" for i in range(1, 11)]
+df_10 = df.select(*selected_signals)
+
+# Step 2: Filter anomaly data to match 10 selected signals
+selected_signal_names = [f"signal_{i}" for i in range(1, 11)]
+anomaly_df_10 = anomaly_df.filter(F.col("signal").isin(selected_signal_names))
+
+# Step 3: Convert both DataFrames to Pandas
+pdf = df_10.toPandas()
+pdf["timestamp"] = pd.to_datetime(pdf["timestamp"], format="%m/%d/%Y %H:%M:%S:%f")
+
+anomaly_pdf = anomaly_df_10.toPandas()
+anomaly_pdf["start_timestamp"] = pd.to_datetime(anomaly_pdf["start_timestamp"], format="%m/%d/%Y %H:%M:%S:%f")
+anomaly_pdf["end_timestamp"] = pd.to_datetime(anomaly_pdf["end_timestamp"], format="%m/%d/%Y %H:%M:%S:%f")
+
+# Step 4: Group anomalies by signal
+anomaly_dict = {}
+for _, row in anomaly_pdf.iterrows():
+    signal = row["signal"]
+    if signal not in anomaly_dict:
+        anomaly_dict[signal] = []
+    anomaly_dict[signal].append((row["start_timestamp"], row["end_timestamp"], row["anomaly_type"]))
+
+# Step 5: Plot each signal with full 600K points
+for signal in [col for col in pdf.columns if col.startswith("signal_")]:
+    print(f"Rendering full plot for: {signal}")
+    plt.figure(figsize=(12, 5))
+
+    # Full scatter of signal points
+    plt.scatter(pdf["timestamp"], pdf[signal], s=1, c='blue', label="Signal")
+
+    # Highlight anomaly windows
+    if signal in anomaly_dict:
+        for (start_ts, end_ts, anomaly_type) in anomaly_dict[signal]:
+            # Red vertical lines at start/end
+            plt.axvline(x=start_ts, color='red', linestyle='--', linewidth=1.0)
+            plt.axvline(x=end_ts, color='red', linestyle='--', linewidth=1.0)
+
+            # Yellow line within the window
+            mask = (pdf["timestamp"] >= start_ts) & (pdf["timestamp"] <= end_ts)
+            if mask.sum() > 1:
+                plt.plot(pdf.loc[mask, "timestamp"], pdf.loc[mask, signal], color='yellow', linewidth=1.5, label=f"Anomaly ({anomaly_type})")
+
+    plt.xlabel("Timestamp")
+    plt.ylabel(signal)
+    plt.title(f"Full Signal Plot with Anomalies: {signal}")
+    plt.xticks(rotation=45)
+    plt.legend(loc="upper right")
+    plt.tight_layout()
+    plt.show()
