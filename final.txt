@@ -1,72 +1,30 @@
-from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, lit, explode, array, struct, last, asc
-from pyspark.sql.window import Window
+import matplotlib.pyplot as plt
+import pandas as pd
 
-spark = SparkSession.builder.appName("Sensor Forward Fill").getOrCreate()
+# Step 1: Get list of all columns
+columns = df.columns
+timestamp_col = "timestamp"
+signal_cols = [col for col in columns if col.startswith("signal_")]
 
-df = spark.read.option("header", True).option("inferSchema", True).csv("/path/to/your/data.csv")
+# Step 2: Cache DataFrame for better performance
+df.cache()
 
-unique_times_df = df.select("tagtime").distinct()
-
-sensor_list = [
-    "VDLM1VS1.XRMSvelocity", "VDLM1VS1.ZRMSvelocity", "VDLM1VS2.XRMSvelocity", "VDLM1VS2.ZRMSvelocity",
-    "VDLM2VS1.XRMSvelocity", "VDLM2VS1.ZRMSvelocity", "VDLM2VS2.XRMSvelocity", "VDLM2VS2.ZRMSvelocity",
-    "OutputcurrentVFD1", "OutputcurrentIDC1", "BusvoltageIDC1", "TorqueFeedbackVFD1",
-    "OutputcurrentVFD2", "OutputcurrentIDC2", "BusvoltageIDC2", "TorqueFeedbackVFD2"
-]
-
-sensors_df = spark.createDataFrame([(s,) for s in sensor_list], ["tagid"])
-
-grid_df = unique_times_df.crossJoin(sensors_df)
-
-enriched_df = grid_df.join(df.select("tagtime", "tagid", "tagvalue", "start", "end"), 
-                           on=["tagtime", "tagid"], how="left")
-
-window_spec = Window.partitionBy("tagid").orderBy(asc("tagtime")).rowsBetween(Window.unboundedPreceding, 0)
-
-filled_df = enriched_df.withColumn("tagvalue_filled", last("tagvalue", ignorenulls=True).over(window_spec))
-
-filled_df = filled_df.withColumn("tagvalue_final", col("tagvalue_filled").cast("double")).fillna({"tagvalue_final": 0.0})
-
-pivot_df = filled_df.select("tagtime", "tagid", "tagvalue_final") \
-                    .groupBy("tagtime") \
-                    .pivot("tagid") \
-                    .agg({"tagvalue_final": "first"}) \
-                    .orderBy("tagtime")
-
-pivot_df.show(truncate=False)
-
-from pyspark.sql.functions import col, last, first
-from pyspark.sql.window import Window
-
-# 1. Pivot the wide table from filled_df
-pivot_df = filled_df.groupBy("tagtime") \
-                    .pivot("tagid") \
-                    .agg(first("tagvalue_final")) \
-                    .orderBy("tagtime")
-
-# 2. Define a global time-ordered window (no partition)
-window_spec = Window.orderBy("tagtime").rowsBetween(Window.unboundedPreceding, 0)
-
-# 3. Get all sensor columns (exclude tagtime)
-sensor_cols = [col_name for col_name in pivot_df.columns if col_name != "tagtime"]
-
-# 4. Forward-fill each sensor column across time
-for col_name in sensor_cols:
-    pivot_df = pivot_df.withColumn(col_name, last(col(col_name), ignoreNulls=True).over(window_spec))
-
-# 5. Show or save final result
-pivot_df.show(truncate=False)
-
-
-
-for col_name in sensor_cols:
-    pivot_df = pivot_df.withColumn(
-        col_name,
-        when(
-            last(col(col_name), ignorenulls=True).over(window_spec).isNull(), 
-            lit(0)
-        ).otherwise(
-            last(col(col_name), ignorenulls=True).over(window_spec)
-        )
-    )
+# Step 3: Loop through each signal column
+for signal in signal_cols:
+    print(f"Plotting: {signal}")
+    
+    # Step 3a: Select timestamp and this signal column
+    temp_df = df.select(timestamp_col, signal)
+    
+    # Step 3b: Limit to a reasonable number of points for plotting (e.g., 5000)
+    temp_pdf = temp_df.limit(5000).toPandas()
+    
+    # Step 3c: Plot using matplotlib
+    plt.figure(figsize=(10, 5))
+    plt.scatter(temp_pdf[timestamp_col], temp_pdf[signal], s=5, c='blue')
+    plt.xlabel("Timestamp")
+    plt.ylabel(signal)
+    plt.title(f"Scatter Plot of {signal}")
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    plt.show()
