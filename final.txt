@@ -28,3 +28,35 @@ for signal in signal_cols:
     plt.xticks(rotation=45)
     plt.tight_layout()
     plt.show()
+
+
+
+import matplotlib.pyplot as plt
+import pandas as pd
+from pyspark.sql import functions as F
+
+# Step 1: Identify columns
+timestamp_col = "timestamp"
+signal_cols = [col for col in df.columns if col.startswith("signal_")]
+
+# Step 2: Sample every 100th row (~6000 rows)
+sampled_df = df.withColumn("row_id", F.monotonically_increasing_id()).filter("row_id % 100 == 0").drop("row_id")
+sampled_df.cache()
+
+# Step 3: Convert entire sampled DF to Pandas ONCE
+pdf = sampled_df.select([timestamp_col] + signal_cols).toPandas()
+
+# Step 4: Convert timestamp column to datetime (for better plotting)
+pdf[timestamp_col] = pd.to_datetime(pdf[timestamp_col], format="%m/%d/%Y %H:%M:%S:%f")
+
+# Step 5: Plot each signal
+for signal in signal_cols:
+    print(f"Plotting: {signal}")
+    plt.figure(figsize=(10, 5))
+    plt.scatter(pdf[timestamp_col], pdf[signal], s=5, c='blue')
+    plt.xlabel("Timestamp")
+    plt.ylabel(signal)
+    plt.title(f"Scatter Plot of {signal}")
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    plt.show()
