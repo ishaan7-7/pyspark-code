@@ -313,3 +313,72 @@ for signal in signal_cols:
     plt.legend()
     plt.show()
 
+import matplotlib.pyplot as plt
+import pandas as pd
+
+# Load anomaly windows (already small)
+anomalydf = pd.read_csv("/dbfs/mnt/data/anomaly_windows_complex.csv")
+anomalydf["start_timestamp"] = pd.to_datetime(anomalydf["start_timestamp"], format="%m/%d/%Y %H:%M:%S:%f")
+anomalydf["end_timestamp"] = pd.to_datetime(anomalydf["end_timestamp"], format="%m/%d/%Y %H:%M:%S:%f")
+
+# Extract signal columns
+signal_cols = [col_name for col_name in df.columns if col_name.startswith("signal_")]
+
+# Loop through each signal (processing one at a time)
+for signal in signal_cols:
+    # Select timestamp and signal column only and convert to Pandas
+    small_df = df.select("timestamp", signal).toPandas()
+
+    # Parse timestamps
+    small_df["timestamp"] = pd.to_datetime(small_df["timestamp"], format="%m/%d/%Y %H:%M:%S:%f")
+    small_df = small_df.sort_values("timestamp").reset_index(drop=True)
+
+    timestamps = small_df["timestamp"].values
+    values = small_df[signal].values
+
+    # Plot scatter points
+    plt.figure(figsize=(10, 5))
+    plt.scatter(timestamps, values, s=5, color="blue", label="Raw Data")
+
+    # Filter anomaly windows for this signal
+    windows = anomalydf[anomalydf["signal"] == signal].sort_values("start_timestamp")
+
+    last_idx = 0
+    for _, row in windows.iterrows():
+        start_ts = row["start_timestamp"]
+        end_ts = row["end_timestamp"]
+
+        # Find the start and end indices in the full dataframe
+        start_mask = small_df["timestamp"] >= start_ts
+        end_mask = small_df["timestamp"] <= end_ts
+
+        if start_mask.any() and end_mask.any():
+            start_idx = start_mask.idxmax()
+            end_idx = end_mask[::-1].idxmax()
+
+            # Plot normal segment before this anomaly window
+            if start_idx > last_idx:
+                plt.plot(timestamps[last_idx:start_idx+1], values[last_idx:start_idx+1], color="gray", linewidth=1.5, label="Normal Trend" if last_idx == 0 else "")
+
+            # Plot anomaly segment
+            plt.plot(timestamps[start_idx:end_idx+1], values[start_idx:end_idx+1], color="yellow", linewidth=2, label="Anomaly Trend")
+
+            # Red vertical lines at boundaries
+            plt.axvline(x=start_ts, color="red", linestyle="--", linewidth=1)
+            plt.axvline(x=end_ts, color="red", linestyle="--", linewidth=1)
+
+            last_idx = end_idx + 1
+
+    # Plot final normal segment after last anomaly
+    if last_idx < len(timestamps):
+        plt.plot(timestamps[last_idx:], values[last_idx:], color="gray", linewidth=1.5)
+
+    # Final touches
+    plt.title(f"Signal: {signal}")
+    plt.xlabel("Timestamp")
+    plt.ylabel("Value")
+    plt.xticks(rotation=45)
+    plt.legend(loc="upper right")
+    plt.tight_layout()
+    plt.show()
+
