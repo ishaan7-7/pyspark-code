@@ -382,3 +382,74 @@ for signal in signal_cols:
     plt.tight_layout()
     plt.show()
 
+
+import matplotlib.pyplot as plt
+import pandas as pd
+import numpy as np
+
+anomalydf = pd.read_csv("/dbfs/mnt/data/anomaly_windows_complex.csv")
+anomalydf["start_timestamp"] = pd.to_datetime(anomalydf["start_timestamp"], format="%m/%d/%Y %H:%M:%S:%f")
+anomalydf["end_timestamp"] = pd.to_datetime(anomalydf["end_timestamp"], format="%m/%d/%Y %H:%M:%S:%f")
+
+signal_cols = [col for col in df.columns if col.startswith("signal_")]
+
+for signal in signal_cols:
+    print(f"Processing {signal}...")
+
+    small_df = df.select("timestamp", signal).toPandas()
+    small_df["timestamp"] = pd.to_datetime(small_df["timestamp"], format="%m/%d/%Y %H:%M:%S:%f")
+    small_df = small_df.sort_values("timestamp").reset_index(drop=True)
+
+    timestamps = small_df["timestamp"].values
+    values = small_df[signal].values
+
+    plt.figure(figsize=(12, 5))
+    plt.scatter(timestamps, values, s=5, color="blue", label="Raw Data")
+
+    signal_windows = anomalydf[anomalydf["signal"] == signal].sort_values("start_timestamp")
+    last_idx = 0
+    for _, row in signal_windows.iterrows():
+        start_ts = row["start_timestamp"]
+        end_ts = row["end_timestamp"]
+
+        start_mask = small_df["timestamp"] >= start_ts
+        end_mask = small_df["timestamp"] <= end_ts
+
+        if start_mask.any() and end_mask.any():
+            start_idx = start_mask.idxmax()
+            end_idx = end_mask[::-1].idxmax()
+
+            if start_idx > last_idx:
+                plt.plot(timestamps[last_idx:start_idx+1], values[last_idx:start_idx+1], color="gray", linewidth=1.5)
+
+            plt.plot(timestamps[start_idx:end_idx+1], values[start_idx:end_idx+1], color="yellow", linewidth=2)
+            plt.axvline(x=start_ts, color="red", linestyle="--", linewidth=1)
+            plt.axvline(x=end_ts, color="red", linestyle="--", linewidth=1)
+
+            last_idx = end_idx + 1
+
+    if last_idx < len(timestamps):
+        plt.plot(timestamps[last_idx:], values[last_idx:], color="gray", linewidth=1.5)
+
+    plt.title(f"Time Series with Anomaly Windows: {signal}")
+    plt.xlabel("Timestamp")
+    plt.ylabel("Signal Value")
+    plt.xticks(rotation=45)
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+    fft_vals = np.fft.fft(values)
+    fft_freqs = np.fft.fftfreq(len(values), d=1)
+
+    pos_mask = fft_freqs > 0
+    freqs = fft_freqs[pos_mask]
+    amplitudes = np.abs(fft_vals[pos_mask])
+
+    plt.figure(figsize=(10, 4))
+    plt.plot(freqs, amplitudes, color='purple')
+    plt.title(f"FFT Spectrum of {signal}")
+    plt.xlabel("Frequency (1/unit time)")
+    plt.ylabel("Amplitude")
+    plt.tight_layout()
+    plt.show()
