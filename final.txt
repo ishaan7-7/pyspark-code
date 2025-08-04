@@ -260,3 +260,56 @@ for signal in signals:
     plt.tight_layout()
     plt.show()
 
+
+
+
+import matplotlib.pyplot as plt
+from pyspark.sql.functions import col
+import pandas as pd
+
+# Load anomaly DataFrame as Pandas — it's small
+anomalydf = pd.read_csv("/dbfs/mnt/data/anomaly_windows_complex.csv")
+anomalydf["start_timestamp"] = pd.to_datetime(anomalydf["start_timestamp"], format="%m/%d/%Y %H:%M:%S:%f")
+anomalydf["end_timestamp"] = pd.to_datetime(anomalydf["end_timestamp"], format="%m/%d/%Y %H:%M:%S:%f")
+
+# Get signal columns dynamically
+signal_cols = [col_name for col_name in df.columns if col_name.startswith("signal_")]
+
+# Loop through each signal column
+for signal in signal_cols:
+    # Select timestamp and this signal only, convert to Pandas
+    small_df = df.select("timestamp", signal).toPandas()
+
+    # Convert timestamp column
+    small_df["timestamp"] = pd.to_datetime(small_df["timestamp"], format="%m/%d/%Y %H:%M:%S:%f")
+    small_df = small_df.sort_values("timestamp").reset_index(drop=True)
+
+    # Plot base scatter
+    plt.figure(figsize=(10, 5))
+    plt.scatter(small_df["timestamp"], small_df[signal], color="blue", s=5, label="Normal")
+
+    # Overlay anomaly trends
+    relevant_windows = anomalydf[anomalydf["signal"] == signal]
+    for _, row in relevant_windows.iterrows():
+        start_ts = row["start_timestamp"]
+        end_ts = row["end_timestamp"]
+
+        # Extract anomaly segment
+        window_df = small_df[(small_df["timestamp"] >= start_ts) & (small_df["timestamp"] <= end_ts)]
+
+        # Yellow anomaly line
+        plt.plot(window_df["timestamp"], window_df[signal], color="yellow", linewidth=2, label="Anomaly Trend")
+
+        # Red boundary lines
+        plt.axvline(x=start_ts, color="red", linestyle="--", linewidth=1)
+        plt.axvline(x=end_ts, color="red", linestyle="--", linewidth=1)
+
+    # Final plot touches
+    plt.title(f"Scatter Plot for {signal}")
+    plt.xlabel("Timestamp")
+    plt.ylabel("Value")
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    plt.legend()
+    plt.show()
+
