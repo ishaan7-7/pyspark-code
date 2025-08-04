@@ -118,3 +118,72 @@ for signal in [col for col in pdf.columns if col.startswith("signal_")]:
     plt.legend(loc="upper right")
     plt.tight_layout()
     plt.show()
+
+
+
+
+import pandas as pd
+import matplotlib.pyplot as plt
+
+# Ensure your dataframes are ready
+df = df.toPandas()
+anomalydf = pd.read_csv("/dbfs/mnt/data/anomaly_windows_complex.csv")
+
+# Convert timestamps
+df["timestamp"] = pd.to_datetime(df["timestamp"], format="%m/%d/%Y %H:%M:%S:%f")
+anomalydf["start_timestamp"] = pd.to_datetime(anomalydf["start_timestamp"], format="%m/%d/%Y %H:%M:%S:%f")
+anomalydf["end_timestamp"] = pd.to_datetime(anomalydf["end_timestamp"], format="%m/%d/%Y %H:%M:%S:%f")
+
+# Limit to 10 signals
+signals = [f"signal_{i}" for i in range(1, 11)]
+
+for signal in signals:
+    plt.figure(figsize=(10, 5))
+
+    # Sort main df by timestamp
+    signal_df = df[["timestamp", signal]].sort_values("timestamp")
+
+    # Merge all anomaly windows for this signal
+    anomaly_windows = anomalydf[anomalydf["signal"] == signal].sort_values("start_timestamp")
+
+    # Prepare index for slicing
+    timestamps = signal_df["timestamp"].values
+    values = signal_df[signal].values
+
+    # Initialize pointers
+    last_idx = 0
+
+    for _, row in anomaly_windows.iterrows():
+        start = row["start_timestamp"]
+        end = row["end_timestamp"]
+
+        # Find indexes where window applies
+        start_idx = signal_df[signal_df["timestamp"] >= start].index.min()
+        end_idx = signal_df[signal_df["timestamp"] <= end].index.max()
+
+        # Plot normal region before window
+        if start_idx > last_idx:
+            plt.plot(timestamps[last_idx:start_idx+1], values[last_idx:start_idx+1], color="blue", linewidth=1.2)
+
+        # Plot anomaly window in yellow
+        plt.plot(timestamps[start_idx:end_idx+1], values[start_idx:end_idx+1], color="yellow", linewidth=2)
+
+        # Red lines to mark window
+        plt.axvline(x=start, color="red", linestyle="--", linewidth=1)
+        plt.axvline(x=end, color="red", linestyle="--", linewidth=1)
+
+        # Update last_idx
+        last_idx = end_idx + 1
+
+    # Plot any remaining normal region after last anomaly
+    if last_idx < len(timestamps) - 1:
+        plt.plot(timestamps[last_idx:], values[last_idx:], color="blue", linewidth=1.2)
+
+    # Final decorations
+    plt.title(f"Signal: {signal}")
+    plt.xlabel("Timestamp")
+    plt.ylabel("Value")
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    plt.show()
+
