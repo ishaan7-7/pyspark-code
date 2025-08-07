@@ -35,6 +35,34 @@ import pandas as pd
 signal_cols = [c for c in df.columns if c.startswith("signal_")]
 batch_ids = df.select("batch_id").distinct().orderBy("batch_id").rdd.flatMap(lambda x: x).collect()
 
+
+
+from pyspark.ml.feature import VectorAssembler, MinMaxScaler
+from pyspark.ml import Pipeline
+
+# ✅ List of signal columns — update if different
+signal_columns = [col for col in df.columns if col.startswith("sig_")]
+
+# ✅ Step 1: Assemble all signals into a single vector column
+assembler = VectorAssembler(inputCols=signal_columns, outputCol="features_vector")
+
+# ✅ Step 2: Scale the vector using MinMaxScaler
+scaler = MinMaxScaler(inputCol="features_vector", outputCol="scaled_features")
+
+# ✅ Step 3: Build a pipeline
+pipeline = Pipeline(stages=[assembler, scaler])
+
+# ✅ Step 4: Fit and transform the data
+pipeline_model = pipeline.fit(df)
+scaled_df = pipeline_model.transform(df)
+
+# ✅ Step 5: Select only needed columns
+scaled_df = scaled_df.select("timestamp", "scaled_features")
+
+# ✅ Show a few rows
+display(scaled_df.limit(5))
+
+
 # Model structure - define once
 def build_autoencoder(input_dim):
     input_layer = Input(shape=(input_dim,))
@@ -73,3 +101,53 @@ for batch_id in batch_ids:
 
     # Step 5: Train autoencoder on this batch
     autoencoder.fit(scaled, scaled, epochs=5, batch_size=256, verbose=1)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+from pyspark.ml.feature import VectorAssembler, MinMaxScaler
+from pyspark.ml import Pipeline
+
+# ✅ List of signal columns — update if different
+signal_columns = [col for col in df.columns if col.startswith("sig_")]
+
+# ✅ Step 1: Assemble all signals into a single vector column
+assembler = VectorAssembler(inputCols=signal_columns, outputCol="features_vector")
+
+# ✅ Step 2: Scale the vector using MinMaxScaler
+scaler = MinMaxScaler(inputCol="features_vector", outputCol="scaled_features")
+
+# ✅ Step 3: Build a pipeline
+pipeline = Pipeline(stages=[assembler, scaler])
+
+# ✅ Step 4: Fit and transform the data
+pipeline_model = pipeline.fit(df)
+scaled_df = pipeline_model.transform(df)
+
+# ✅ Step 5: Select only needed columns
+scaled_df = scaled_df.select("timestamp", "scaled_features")
+
+# ✅ Show a few rows
+display(scaled_df.limit(5))
+
