@@ -1,0 +1,75 @@
+from pyspark.sql import SparkSession
+import pyspark.sql.functions as F
+from pyspark.sql.window import Window
+
+# Load the full dataset
+data_path = "/Volumes/workspace/default/signal_data/"
+df = spark.read.option("header", True).option("inferSchema", True).csv(data_path)
+
+# Sort by timestamp (optional, but good for windowing)
+df = df.orderBy("timestamp")
+
+# Add row index for batching
+window_spec = Window.orderBy("timestamp")
+df = df.withColumn("row_num", F.row_number().over(window_spec))
+
+# Set batch size (e.g., 10000 rows per chunk)
+batch_size = 10000
+df = df.withColumn("batch_id", (F.col("row_num") / batch_size).cast("int"))
+
+# Preview
+df.select("timestamp", "batch_id").show(5)
+
+
+
+
+
+import numpy as np
+from sklearn.preprocessing import StandardScaler
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Input, Dense
+from tensorflow.keras import regularizers
+import pandas as pd
+
+# Prepare variables
+signal_cols = [c for c in df.columns if c.startswith("signal_")]
+batch_ids = df.select("batch_id").distinct().orderBy("batch_id").rdd.flatMap(lambda x: x).collect()
+
+# Model structure - define once
+def build_autoencoder(input_dim):
+    input_layer = Input(shape=(input_dim,))
+    encoder = Dense(32, activation="relu")(input_layer)
+    encoder = Dense(16, activation="relu")(encoder)
+    bottleneck = Dense(8, activation="relu")(encoder)
+    decoder = Dense(16, activation="relu")(bottleneck)
+    decoder = Dense(32, activation="relu")(decoder)
+    output_layer = Dense(input_dim)(decoder)
+
+    autoencoder = Model(inputs=input_layer, outputs=output_layer)
+    autoencoder.compile(optimizer="adam", loss="mse")
+    return autoencoder
+
+autoencoder = build_autoencoder(len(signal_cols))
+scaler = StandardScaler()
+
+# Loop through each batch
+for batch_id in batch_ids:
+    print(f"Processing batch {batch_id}")
+    
+    # Step 1: Extract batch as Spark DataFrame
+    batch_df = df.filter(F.col("batch_id") == batch_id).select(signal_cols)
+    
+    # Step 2: Convert to Pandas
+    pdf = batch_df.toPandas()
+    
+    # Step 3: Drop rows with nulls (optional cleanup)
+    pdf = pdf.dropna()
+    
+    if len(pdf) == 0:
+        continue
+
+    # Step 4: Normalize
+    scaled = scaler.fit_transform(pdf)
+
+    # Step 5: Train autoencoder on this batch
+    autoencoder.fit(scaled, scaled, epochs=5, batch_size=256, verbose=1)
