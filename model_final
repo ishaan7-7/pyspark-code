@@ -1,0 +1,27 @@
+Import and Preprocessing:
+
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col
+from pyspark.ml.feature import VectorAssembler, MinMaxScaler
+import tensorflow as tf
+import numpy as np
+
+try:
+    spark
+except NameError:
+    spark = SparkSession.builder.appName("AutoencoderSignalAnomaly").getOrCreate()
+
+input_path = "signal_dataset.csv"
+df = spark.read.format("csv").option("header", "true").option("inferSchema", "true").load(input_path)
+
+signal_cols = [f"signal_{i}" for i in range(1, 61)]
+df_casted = df.select([col(c).cast("double") for c in signal_cols])
+
+assembler = VectorAssembler(inputCols=signal_cols, outputCol="features")
+df_vector = assembler.transform(df_casted).select("features")
+
+scaler = MinMaxScaler(inputCol="features", outputCol="scaled_features")
+scaler_model = scaler.fit(df_vector)
+df_scaled = scaler_model.transform(df_vector).select("scaled_features")
+
+features_array = np.array(df_scaled.rdd.map(lambda row: row["scaled_features"].toArray()).collect())
