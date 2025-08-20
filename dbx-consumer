@@ -118,3 +118,25 @@ def generate_rows(batch_size=1000):
         rows.append(row)
     return rows
 
+Batch to DF
+
+from pyspark.sql import SparkSession
+from pyspark.sql.types import StructType, StructField, StringType, DoubleType
+
+# -----------------------
+# Spark session
+# -----------------------
+spark = SparkSession.builder.appName("SignalStreamSim").getOrCreate()
+
+# -----------------------
+# Schema for Spark DataFrame
+# -----------------------
+fields = [StructField("timestamp", StringType(), True)] + \
+         [StructField(f"signal_{i}", DoubleType(), True) for i in range(1, 61)]
+schema = StructType(fields)
+
+# -----------------------
+# Function to convert batch to Spark DF
+# -----------------------
+def batch_to_spark_df(rows):
+    return spark.createDataFrame(rows, schema=schema)
