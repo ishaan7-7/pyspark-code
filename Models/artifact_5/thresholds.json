@@ -1,0 +1,13 @@
+{
+  "dense_row_mse": {
+    "p90": 0.03320319689810276,
+    "p95": 0.034621932543814175,
+    "p99": 0.04002597961574791
+  },
+  "lstm_win_mse": {
+    "p90": 0.02606837823987007,
+    "p95": 0.026154575869441032,
+    "p99": 0.02638414241373539
+  },
+  "notes": "Thresholds are percentiles of validation reconstruction MSE. Use p95/p99 for anomaly flags; tune per stream."
+}

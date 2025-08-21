@@ -1,0 +1,30 @@
+{
+  "id": "artifact_3",
+  "dense_params": {
+    "lr": 0.001,
+    "batch": 1024,
+    "epochs": 35,
+    "patience": 5,
+    "weight_decay": 1e-06
+  },
+  "lstm_params": {
+    "lr": 0.001,
+    "batch": 256,
+    "epochs": 35,
+    "patience": 5,
+    "hidden": 80,
+    "latent": 20,
+    "layers": 1
+  },
+  "input_dim": 60,
+  "seq_len": 30,
+  "stride": 1,
+  "val_losses": {
+    "dense": 0.0836455300450325,
+    "lstm": 0.024685893207788467
+  },
+  "files": {
+    "dense_ae": "Models/artifact_3/dense_ae.pt",
+    "lstm_ae": "Models/artifact_3/lstm_ae.pt"
+  }
+}

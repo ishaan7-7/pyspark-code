@@ -1,0 +1,30 @@
+{
+  "id": "artifact_4",
+  "dense_params": {
+    "lr": 0.002,
+    "batch": 512,
+    "epochs": 30,
+    "patience": 4,
+    "weight_decay": 0.0
+  },
+  "lstm_params": {
+    "lr": 0.002,
+    "batch": 128,
+    "epochs": 30,
+    "patience": 4,
+    "hidden": 64,
+    "latent": 16,
+    "layers": 2
+  },
+  "input_dim": 60,
+  "seq_len": 30,
+  "stride": 1,
+  "val_losses": {
+    "dense": 0.025239812210202217,
+    "lstm": 0.025029497711282028
+  },
+  "files": {
+    "dense_ae": "Models/artifact_4/dense_ae.pt",
+    "lstm_ae": "Models/artifact_4/lstm_ae.pt"
+  }
+}
